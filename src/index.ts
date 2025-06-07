@@ -1,4 +1,7 @@
 import net from "net";
+import { parseId, validateBody } from "./validations";
+import { UserService } from "./service";
+import { BadRequestException, NotFoundException } from "./exceptions";
 const PORT = 3000;
 
 type HTTPMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -21,7 +24,11 @@ interface HTTPResponse {
 	body: object | string;
 }
 
-const httpStatus = new Map([[200, "OK"], [201, "Created"], [404, "Not Found"]]);
+const httpStatus = new Map([
+	[200, "OK"],
+	[201, "Created"],
+	[404, "Not Found"],
+]);
 
 const notFoundPage = `
 <!DOCTYPE html>
@@ -59,7 +66,7 @@ const notFoundPage = `
     <p>Lo sentimos, la página que está buscando no existe.</p>
     <p>HTTP from TCP</p>
 </body>
-</html>`
+</html>`;
 
 const httpServer = net.createServer((socket) => {
 	socket.on("data", (data) => {
@@ -84,6 +91,8 @@ httpServer.listen(PORT, () => {
 	console.log(`Servidor HTTP (TCP) escuchando en http://localhost:${PORT}`);
 });
 
+const userService = new UserService();
+
 function parseHttpData(data: Buffer<ArrayBufferLike>): HTTPRequest {
 	const resquestStr = data.toString();
 	const [method, path] = resquestStr.split(" ");
@@ -103,47 +112,99 @@ function parseHttpData(data: Buffer<ArrayBufferLike>): HTTPRequest {
 function httpResponse(response: HTTPResponse) {
 	const statusMsg = httpStatus.get(response.statusCode);
 	const status = `${response.statusCode} ${statusMsg}`;
-	const bodyStr = typeof response.body === 'object'
-		? JSON.stringify(response.body)
-		: response.body;
+	const bodyStr =
+		typeof response.body === "object"
+			? JSON.stringify(response.body)
+			: response.body;
 
 	const httpResponse = `HTTP/1.1 ${status}\r\nContent-Type: ${response.contentType}\r\n\r\n${bodyStr}`;
-	
+
 	return httpResponse;
 }
 
-function router(request: HTTPRequest) {
-	if (request.method === "GET" && request.path === "/users") {
+function handleRequest(cb: () => string) {
+	try {
+		return cb();
+	} catch (error) {
+		if (error instanceof BadRequestException) {
+			return httpResponse({
+				statusCode: error.statusCode,
+				contentType: "application/json",
+				body: { message: error.message },
+			});
+		}
+
+		if (error instanceof NotFoundException) {
+			return httpResponse({
+				statusCode: error.statusCode,
+				contentType: "application/json",
+				body: { message: error.message },
+			});
+		}
+
 		return httpResponse({
-			statusCode: 200,
-			contentType: 'application/json',
-			body: { users: [] }
-		})
-	} else if (request.method === "GET" && request.path === "/users") {
-		return httpResponse({
-			statusCode: 200,
-			contentType: 'application/json',
-			body: { users: [] }
-		})
-	} else if (request.method === "GET" && request.path === "/users") {
-		return httpResponse({
-			statusCode: 200,
-			contentType: 'application/json',
-			body: { users: [] }
-		})
-	} else if (request.method === "GET" && request.path === "/users") {
-		return httpResponse({
-			statusCode: 200,
-			contentType: 'application/json',
-			body: { users: [] }
-		})
-	} else {
-		return httpResponse({
-			statusCode: 404,
-			contentType: 'text/html',
-			body: notFoundPage
-		})
+			statusCode: 500,
+			contentType: "application/json",
+			body: { message: "Internal Server Error" },
+		});
 	}
 }
 
+function router(request: HTTPRequest) {
+	if (request.method === "GET" && request.path.startsWith("/users")) {
+		return handleRequest(() => {
+			const users = userService.list();
 
+			return httpResponse({
+				statusCode: 200,
+				contentType: "application/json",
+				body: users,
+			});
+		});
+
+	} else if (request.method === "POST" && request.path.startsWith("/users")) {
+		return handleRequest(() => {
+			const body = validateBody(request.body);
+			const user = userService.create(body);
+
+			return httpResponse({
+				statusCode: 201,
+				contentType: "application/json",
+				body: user,
+			});
+		});
+
+	} else if (request.method === "PUT" && request.path.startsWith("/users/")) {
+		return handleRequest(() => {
+			const id = parseId(request.path);
+			const body = validateBody(request.body);
+			const user = userService.update(id, body);
+
+			return httpResponse({
+				statusCode: 200,
+				contentType: "application/json",
+				body: user,
+			});
+		});
+	} else if (
+		request.method === "DELETE" &&
+		request.path.startsWith("/users/")
+	) {
+		return handleRequest(() => {
+			const id = parseId(request.path);
+			const user = userService.delete(id);
+
+			return httpResponse({
+				statusCode: 200,
+				contentType: "application/json",
+				body: user,
+			});
+		});
+	} else {
+		return httpResponse({
+			statusCode: 404,
+			contentType: "text/html",
+			body: notFoundPage,
+		});
+	}
+}
